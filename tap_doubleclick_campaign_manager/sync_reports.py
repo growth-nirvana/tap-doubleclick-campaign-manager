@@ -87,68 +87,46 @@ def transform_field(dfa_type, value):
 
 def normalize_types(obj, fieldmap):
     for field in fieldmap:
-        field_name = field['name']
-        expected_type = field['type']
-        val = obj.get(field_name)
+        field_name = field["name"]
+        expected_types = field.get("type", [])
+        value = obj.get(field_name)
 
-        if val is None:
+        if value is None:
             continue
+
+        # If expected_types is not a list, make it one
+        if not isinstance(expected_types, list):
+            expected_types = [expected_types]
+
+        # Handle optional null types
+        types = [t for t in expected_types if t != "null"]
+        if not types:
+            continue  # no usable type
 
         try:
-            if isinstance(expected_type, list):
-                if 'string' in expected_type:
-                    obj[field_name] = str(val)
-                elif 'number' in expected_type:
-                    obj[field_name] = float(val)
-                elif 'integer' in expected_type:
-                    obj[field_name] = int(val)
+            target_type = types[0]  # prioritize first non-null type
+            if target_type == "string":
+                obj[field_name] = str(value)
+            elif target_type == "number":
+                obj[field_name] = float(value)
+            elif target_type == "integer":
+                obj[field_name] = int(float(value))  # handles "5.0" -> 5
+            elif target_type == "boolean":
+                if isinstance(value, bool):
+                    obj[field_name] = value
+                elif isinstance(value, str):
+                    obj[field_name] = value.lower() in ["true", "1", "yes"]
+                else:
+                    obj[field_name] = bool(value)
             else:
-                if expected_type == 'string':
-                    obj[field_name] = str(val)
-                elif expected_type == 'number':
-                    obj[field_name] = float(val)
-                elif expected_type == 'integer':
-                    obj[field_name] = int(val)
-                elif expected_type == 'boolean':
-                    obj[field_name] = bool(val)
+                # Unknown type fallback
+                obj[field_name] = str(value)
         except Exception:
-            LOGGER.warning("Type coercion failed for field '%s' with value '%s', falling back to string", field_name, val)
-            obj[field_name] = str(val)
+            # Fallback: convert to string to avoid breaking Arrow
+            obj[field_name] = str(value)
 
     return obj
 
-
-    for field in fieldmap:
-        field_name = field['name']
-        expected_type = field['type']
-        val = obj.get(field_name)
-
-        # Ensure we're not casting nulls
-        if val is None:
-            continue
-
-        if isinstance(expected_type, list):
-            if 'string' in expected_type:
-                obj[field_name] = str(val)
-            elif 'number' in expected_type:
-                try:
-                    obj[field_name] = float(val)
-                except ValueError:
-                    pass
-            elif 'integer' in expected_type:
-                try:
-                    obj[field_name] = int(val)
-                except ValueError:
-                    pass
-        else:
-            if expected_type == 'string':
-                obj[field_name] = str(val)
-            elif expected_type == 'number':
-                obj[field_name] = float(val)
-            elif expected_type == 'integer':
-                obj[field_name] = int(val)
-
-    return obj
 
 def process_file(service, fieldmap, report_config, file_id, report_time):
     report_id = report_config['report_id']
@@ -190,8 +168,14 @@ def process_file(service, fieldmap, report_config, file_id, report_time):
 
             obj = normalize_types(obj, fieldmap)
 
-            singer.write_record(stream_name, obj, stream_alias=stream_alias)
+            try:
+                singer.write_record(stream_name, obj, stream_alias=stream_alias)
+            except Exception as e:
+                print("❌ RECORD TYPE ERROR:", {k: f"{type(v).__name__}={v}" for k, v in obj.items()})
+                raise e
+
             line_state['count'] += 1
+
 
     stream = StreamFunc(line_transform)
     downloader = http.MediaIoBaseDownload(stream, request, chunksize=CHUNK_SIZE)
