@@ -93,7 +93,10 @@ def normalize_types(obj, fieldmap):
 
         try:
             if isinstance(field_type, list):
-                if "string" in field_type and not isinstance(val, str):
+                # Force string if mixed types (e.g. ["string", "integer"])
+                if "string" in field_type and "integer" in field_type:
+                    obj[field] = str(val)
+                elif "string" in field_type and not isinstance(val, str):
                     obj[field] = str(val)
                 elif "long" in field_type and not isinstance(val, int):
                     obj[field] = int(val)
@@ -109,11 +112,10 @@ def normalize_types(obj, fieldmap):
                 elif field_type == "boolean" and not isinstance(val, bool):
                     obj[field] = str(val).lower() in ("true", "1", "yes")
         except Exception as e:
-            print(f"⚠️ Error normalizing field '{field}' with value '{val}': {e}")
+            print(f"Error normalizing field '{field}' with value '{val}': {e}")
             raise
 
     return obj
-
 
 def process_file(service, fieldmap, report_config, file_id, report_time):
     report_id = report_config['report_id']
@@ -129,6 +131,8 @@ def process_file(service, fieldmap, report_config, file_id, report_time):
     }
 
     report_id_int = int(report_id)
+
+    field_type_lookup = get_field_type_lookup()
 
     def line_transform(line):
         if not line_state['past_headers'] and not line_state['headers_line'] and line == 'Report Fields':
@@ -151,17 +155,20 @@ def process_file(service, fieldmap, report_config, file_id, report_time):
                 obj[field['name']] = val
 
             obj[SINGER_REPORT_FIELD] = report_time
-            obj[REPORT_ID_FIELD] = report_id_int
+            obj[REPORT_ID_FIELD] = str(report_id_int)
 
-            obj = normalize_types(obj, fieldmap)
+            type_lookup = {f["name"]: f["type"] for f in fieldmap}
+            type_lookup["_sdc_report_time"] = "string"
+            type_lookup["_sdc_report_id"] = "integer"
+            obj = normalize_types(obj, type_lookup)
 
             for k, v in obj.items():
-                expected_type = field_type_lookup.get(k)
+                expected_type = type_lookup.get(k)
                 actual_type = type(v).__name__
                 if expected_type and isinstance(expected_type, list):
                     valid = any(
                         (t == "string" and isinstance(v, str)) or
-                        (t == "long" and isinstance(v, int)) or
+                        (t in ["long", "integer"] and isinstance(v, int)) or
                         (t == "double" and isinstance(v, float)) or
                         (t == "boolean" and isinstance(v, bool))
                         for t in expected_type
@@ -170,13 +177,13 @@ def process_file(service, fieldmap, report_config, file_id, report_time):
                     t = expected_type or ""
                     valid = (
                         (t == "string" and isinstance(v, str)) or
-                        (t == "long" and isinstance(v, int)) or
+                        (t in ["long", "integer"] and isinstance(v, int)) or
                         (t == "double" and isinstance(v, float)) or
                         (t == "boolean" and isinstance(v, bool))
                     )
 
                 if not valid:
-                    print(f"⚠️ Field {k}: {actual_type}={v} doesn't match expected {expected_type}")
+                    print(f"Field {k}: {actual_type}={v} doesn't match expected {expected_type}")
 
             try:
                 singer.write_record(stream_name, obj, stream_alias=stream_alias)
@@ -184,7 +191,6 @@ def process_file(service, fieldmap, report_config, file_id, report_time):
                 raise e
 
             line_state['count'] += 1
-
 
     stream = StreamFunc(line_transform)
     downloader = http.MediaIoBaseDownload(stream, request, chunksize=CHUNK_SIZE)
