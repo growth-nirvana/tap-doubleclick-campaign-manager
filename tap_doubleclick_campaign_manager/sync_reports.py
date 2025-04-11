@@ -60,62 +60,32 @@ def parse_line(line):
 def transform_field(dfa_type, value):
     if value == '':
         return None
+    if dfa_type == 'double':
+        return float(value)
+    if dfa_type == 'long':
+        try:
+            return int(value)
+        except:
+            return None
+    if dfa_type == 'boolean':
+        value = value.lower().strip()
+        return (
+            value == 'true' or
+            value == 't' or
+            value == 'yes' or
+            value == 'y' or
+            value == '1'
+        )
 
     if isinstance(dfa_type, list):
         for t in dfa_type:
             try:
                 return transform_field(t, value)
-            except Exception:
+            except ValueError as error:
+                LOGGER.warning(f'Failed parse field as {t}')
                 continue
-        return value
-
-    try:
-        if dfa_type == 'double':
-            return float(value)
-        elif dfa_type == 'long':
-            return int(value)
-        elif dfa_type == 'boolean':
-            value = value.lower().strip()
-            return value in ('true', 't', 'yes', 'y')
-        elif dfa_type == 'string':
-            return value
-    except Exception:
-        return value
 
     return value
-
-
-def normalize_types(obj, fieldmap):
-    for field, field_type in fieldmap.items():
-        val = obj.get(field)
-        if val is None:
-            continue
-
-        try:
-            if isinstance(field_type, list):
-                # Force string if mixed types (e.g. ["string", "integer"])
-                if "string" in field_type and "integer" in field_type:
-                    obj[field] = str(val)
-                elif "string" in field_type and not isinstance(val, str):
-                    obj[field] = str(val)
-                elif "long" in field_type and not isinstance(val, int):
-                    obj[field] = int(val)
-                elif "double" in field_type and not isinstance(val, float):
-                    obj[field] = float(val)
-            else:
-                if field_type == "string" and not isinstance(val, str):
-                    obj[field] = str(val)
-                elif field_type in ["long", "integer"] and not isinstance(val, int):
-                    obj[field] = int(val)
-                elif field_type == "double" and not isinstance(val, float):
-                    obj[field] = float(val)
-                elif field_type == "boolean" and not isinstance(val, bool):
-                    obj[field] = str(val).lower() in ("true", "1", "yes")
-        except Exception as e:
-            print(f"Error normalizing field '{field}' with value '{val}': {e}")
-            raise
-
-    return obj
 
 def process_file(service, fieldmap, report_config, file_id, report_time):
     report_id = report_config['report_id']
@@ -131,8 +101,6 @@ def process_file(service, fieldmap, report_config, file_id, report_time):
     }
 
     report_id_int = int(report_id)
-
-    field_type_lookup = get_field_type_lookup()
 
     def line_transform(line):
         if not line_state['past_headers'] and not line_state['headers_line'] and line == 'Report Fields':
@@ -151,45 +119,12 @@ def process_file(service, fieldmap, report_config, file_id, report_time):
             obj = {}
             for i in range(len(fieldmap)):
                 field = fieldmap[i]
-                val = transform_field(field['type'], row[i])
-                obj[field['name']] = val
+                obj[field['name']] = transform_field(field['type'], row[i])
 
             obj[SINGER_REPORT_FIELD] = report_time
-            obj[REPORT_ID_FIELD] = str(report_id_int)
+            obj[REPORT_ID_FIELD] = report_id_int
 
-            type_lookup = {f["name"]: f["type"] for f in fieldmap}
-            type_lookup["_sdc_report_time"] = "string"
-            type_lookup["_sdc_report_id"] = "integer"
-            obj = normalize_types(obj, type_lookup)
-
-            for k, v in obj.items():
-                expected_type = type_lookup.get(k)
-                actual_type = type(v).__name__
-                if expected_type and isinstance(expected_type, list):
-                    valid = any(
-                        (t == "string" and isinstance(v, str)) or
-                        (t in ["long", "integer"] and isinstance(v, int)) or
-                        (t == "double" and isinstance(v, float)) or
-                        (t == "boolean" and isinstance(v, bool))
-                        for t in expected_type
-                    )
-                else:
-                    t = expected_type or ""
-                    valid = (
-                        (t == "string" and isinstance(v, str)) or
-                        (t in ["long", "integer"] and isinstance(v, int)) or
-                        (t == "double" and isinstance(v, float)) or
-                        (t == "boolean" and isinstance(v, bool))
-                    )
-
-                if not valid:
-                    print(f"Field {k}: {actual_type}={v} doesn't match expected {expected_type}")
-
-            try:
-                singer.write_record(stream_name, obj, stream_alias=stream_alias)
-            except Exception as e:
-                raise e
-
+            singer.write_record(stream_name, obj, stream_alias=stream_alias)
             line_state['count'] += 1
 
     stream = StreamFunc(line_transform)
@@ -204,8 +139,7 @@ def process_file(service, fieldmap, report_config, file_id, report_time):
 def sync_report(service, field_type_lookup, profile_id, report_config):
     report_name = report_config.get("name")
     report_start_date = report_config.get("start_date")
-    
-    # Skip floodlight reports older than 60 days
+
     if report_name and "floodlight" in report_name.lower():
         try:
             import pendulum
@@ -215,27 +149,45 @@ def sync_report(service, field_type_lookup, profile_id, report_config):
                 return
         except Exception as e:
             LOGGER.error(f"Failed to parse start_date '{report_start_date}' for report '{report_name}': {e}")
-    
+
     report_id = report_config['report_id']
     stream_name = report_config['stream_name']
     stream_alias = report_config['stream_alias']
 
     LOGGER.info("%s: Starting sync", stream_name)
 
-    report = service.reports().get(profileId=profile_id, reportId=report_id).execute()
+    report = (
+        service
+        .reports()
+        .get(profileId=profile_id, reportId=report_id)
+        .execute()
+    )
+
     fieldmap = get_fields(field_type_lookup, report)
     schema = get_schema(stream_name, fieldmap)
     singer.write_schema(stream_name, schema, [], stream_alias=stream_alias)
 
     with singer.metrics.job_timer('run_report'):
         report_time = datetime.utcnow().isoformat() + 'Z'
-        report_file = service.reports().run(profileId=profile_id, reportId=report_id).execute()
+        report_file = (
+            service
+            .reports()
+            .run(profileId=profile_id, reportId=report_id)
+            .execute()
+        )
+
         report_file_id = report_file['id']
 
         sleep = 0
         start_time = time.time()
         while True:
-            report_file = service.files().get(reportId=report_id, fileId=report_file_id).execute()
+            report_file = (
+                service
+                .files()
+                .get(reportId=report_id, fileId=report_file_id)
+                .execute()
+            )
+
             status = report_file['status']
 
             if status == 'QUEUED':
@@ -263,6 +215,7 @@ def sync_report(service, field_type_lookup, profile_id, report_config):
 
 def sync_reports(service, config, catalog, state):
     profile_id = config.get('profile_id')
+
     reports = []
     for stream in catalog.streams:
         mdata = singer.metadata.to_map(stream.metadata)
@@ -273,7 +226,6 @@ def sync_reports(service, config, catalog, state):
                 'stream_name': stream.tap_stream_id,
                 'stream_alias': stream.stream_alias
             })
-
     reports = sorted(reports, key=lambda x: x['report_id'])
 
     if state.get('reports') != reports:
@@ -287,14 +239,19 @@ def sync_reports(service, config, catalog, state):
     for report_config in reports:
         report_id = report_config['report_id']
 
-        if current_report is not None and not past_current_report and current_report != report_id:
+        if current_report is not None and \
+           not past_current_report and \
+           current_report != report_id:
             continue
 
         past_current_report = True
         state['current_report'] = report_id
         singer.write_state(state)
 
-        sync_report(service, field_type_lookup, profile_id, report_config)
+        sync_report(service,
+                    field_type_lookup,
+                    profile_id,
+                    report_config)
 
     state['reports'] = None
     state['current_report'] = None
