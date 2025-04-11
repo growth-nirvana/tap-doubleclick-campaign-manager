@@ -84,7 +84,40 @@ def transform_field(dfa_type, value):
 
     return value
 
+
 def normalize_types(obj, fieldmap):
+    for field in fieldmap:
+        field_name = field['name']
+        expected_type = field['type']
+        val = obj.get(field_name)
+
+        if val is None:
+            continue
+
+        try:
+            if isinstance(expected_type, list):
+                if 'string' in expected_type:
+                    obj[field_name] = str(val)
+                elif 'number' in expected_type:
+                    obj[field_name] = float(val)
+                elif 'integer' in expected_type:
+                    obj[field_name] = int(val)
+            else:
+                if expected_type == 'string':
+                    obj[field_name] = str(val)
+                elif expected_type == 'number':
+                    obj[field_name] = float(val)
+                elif expected_type == 'integer':
+                    obj[field_name] = int(val)
+                elif expected_type == 'boolean':
+                    obj[field_name] = bool(val)
+        except Exception:
+            LOGGER.warning("Type coercion failed for field '%s' with value '%s', falling back to string", field_name, val)
+            obj[field_name] = str(val)
+
+    return obj
+
+
     for field in fieldmap:
         field_name = field['name']
         expected_type = field['type']
@@ -170,6 +203,20 @@ def process_file(service, fieldmap, report_config, file_id, report_time):
         counter.increment(line_state['count'])
 
 def sync_report(service, field_type_lookup, profile_id, report_config):
+    report_name = report_config.get("name")
+    report_start_date = report_config.get("start_date")
+    
+    # Skip floodlight reports older than 60 days
+    if report_name and "floodlight" in report_name.lower():
+        try:
+            import pendulum
+            start_date = pendulum.parse(report_start_date)
+            if start_date < pendulum.now().subtract(days=60):
+                LOGGER.warning(f"Skipping floodlight report '{report_name}' because it's older than 60 days (start: {start_date.to_date_string()})")
+                return
+        except Exception as e:
+            LOGGER.error(f"Failed to parse start_date '{report_start_date}' for report '{report_name}': {e}")
+    
     report_id = report_config['report_id']
     stream_name = report_config['stream_name']
     stream_alias = report_config['stream_alias']
