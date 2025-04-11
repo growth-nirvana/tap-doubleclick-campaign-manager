@@ -86,31 +86,31 @@ def transform_field(dfa_type, value):
 
 
 def normalize_types(obj, fieldmap):
-    for field in fieldmap:
-        name = field["name"]
-        value = obj.get(name)
-
-        if value is None:
+    for field, field_type in fieldmap.items():
+        val = obj.get(field)
+        if val is None:
             continue
 
-        types = field.get("type")
-        if not types:
-            continue
-        if isinstance(types, str):
-            types = [types]
-
-        if "string" in types and all(t in ["string", "null"] for t in types):
-            obj[name] = str(value)
-        elif "number" in types and not isinstance(value, float):
-            try:
-                obj[name] = float(value)
-            except Exception:
-                pass  # Let it fail if it's not castable
-        elif "integer" in types and not isinstance(value, int):
-            try:
-                obj[name] = int(float(value))
-            except Exception:
-                pass  # Let it fail gracefully
+        try:
+            if isinstance(field_type, list):
+                if "string" in field_type and not isinstance(val, str):
+                    obj[field] = str(val)
+                elif "long" in field_type and not isinstance(val, int):
+                    obj[field] = int(val)
+                elif "double" in field_type and not isinstance(val, float):
+                    obj[field] = float(val)
+            else:
+                if field_type == "string" and not isinstance(val, str):
+                    obj[field] = str(val)
+                elif field_type in ["long", "integer"] and not isinstance(val, int):
+                    obj[field] = int(val)
+                elif field_type == "double" and not isinstance(val, float):
+                    obj[field] = float(val)
+                elif field_type == "boolean" and not isinstance(val, bool):
+                    obj[field] = str(val).lower() in ("true", "1", "yes")
+        except Exception as e:
+            print(f"⚠️ Error normalizing field '{field}' with value '{val}': {e}")
+            raise
 
     return obj
 
@@ -155,10 +155,32 @@ def process_file(service, fieldmap, report_config, file_id, report_time):
 
             obj = normalize_types(obj, fieldmap)
 
+            for k, v in obj.items():
+                expected_type = field_type_lookup.get(k)
+                actual_type = type(v).__name__
+                if expected_type and isinstance(expected_type, list):
+                    valid = any(
+                        (t == "string" and isinstance(v, str)) or
+                        (t == "long" and isinstance(v, int)) or
+                        (t == "double" and isinstance(v, float)) or
+                        (t == "boolean" and isinstance(v, bool))
+                        for t in expected_type
+                    )
+                else:
+                    t = expected_type or ""
+                    valid = (
+                        (t == "string" and isinstance(v, str)) or
+                        (t == "long" and isinstance(v, int)) or
+                        (t == "double" and isinstance(v, float)) or
+                        (t == "boolean" and isinstance(v, bool))
+                    )
+
+                if not valid:
+                    print(f"⚠️ Field {k}: {actual_type}={v} doesn't match expected {expected_type}")
+
             try:
                 singer.write_record(stream_name, obj, stream_alias=stream_alias)
             except Exception as e:
-                print("❌ RECORD TYPE ERROR:", {k: f"{type(v).__name__}={v}" for k, v in obj.items()})
                 raise e
 
             line_state['count'] += 1
