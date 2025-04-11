@@ -1,7 +1,6 @@
 import re
 
 from singer.catalog import Catalog, CatalogEntry, Schema
-
 from tap_doubleclick_campaign_manager.schema import (
     SINGER_REPORT_FIELD,
     get_fields,
@@ -25,40 +24,38 @@ def discover_streams(service, config):
     )
 
     reports = sorted(reports, key=lambda x: x['id'])
-    report_configs = {}
-    for report in reports:
-        stream_name = sanitize_name(report['name'])
-        tap_stream_id = '{}_{}'.format(stream_name, report['id'])
-        report_configs[(stream_name, tap_stream_id)] = report
-
     field_type_lookup = get_field_type_lookup()
     catalog = Catalog([])
 
-    for (stream_name, tap_stream_id), report in report_configs.items():
+    for report in reports:
+        raw_name = report['name']
+        report_id = report['id']
+        base_stream_name = sanitize_name(raw_name)
+        stream_name = f"{base_stream_name}_{report_id}"  # ensures uniqueness
+        tap_stream_id = stream_name  # same as stream name for consistency
+
         fieldmap = get_fields(field_type_lookup, report)
         schema_dict = get_schema(stream_name, fieldmap)
         schema = Schema.from_dict(schema_dict)
 
-        metadata = []
-        metadata.append({
-            'metadata': {
-                'tap-doubleclick-campaign-manager.report-id': report['id']
-            },
-            'breadcrumb': []
-        })
-
+        metadata = [
+            {
+                'metadata': {
+                    'tap-doubleclick-campaign-manager.report-id': report_id
+                },
+                'breadcrumb': []
+            }
+        ]
         for prop in schema_dict['properties'].keys():
             metadata.append({
-                'metadata': {
-                    'inclusion': 'automatic'
-                },
+                'metadata': {'inclusion': 'automatic'},
                 'breadcrumb': ['properties', prop]
             })
 
         catalog.streams.append(CatalogEntry(
             stream=stream_name,
-            stream_alias=stream_name,
             tap_stream_id=tap_stream_id,
+            stream_alias=stream_name,
             key_properties=[],
             schema=schema,
             metadata=metadata

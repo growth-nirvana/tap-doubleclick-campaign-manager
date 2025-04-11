@@ -104,3 +104,6 @@ state.json
 *test.config.json
 *.catalog.json
 *.txt
+
+.venv
+catalog.json
