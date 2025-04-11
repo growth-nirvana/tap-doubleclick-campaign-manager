@@ -87,43 +87,30 @@ def transform_field(dfa_type, value):
 
 def normalize_types(obj, fieldmap):
     for field in fieldmap:
-        field_name = field["name"]
-        expected_types = field.get("type", [])
-        value = obj.get(field_name)
+        name = field["name"]
+        value = obj.get(name)
 
         if value is None:
             continue
 
-        # If expected_types is not a list, make it one
-        if not isinstance(expected_types, list):
-            expected_types = [expected_types]
-
-        # Handle optional null types
-        types = [t for t in expected_types if t != "null"]
+        types = field.get("type")
         if not types:
-            continue  # no usable type
+            continue
+        if isinstance(types, str):
+            types = [types]
 
-        try:
-            target_type = types[0]  # prioritize first non-null type
-            if target_type == "string":
-                obj[field_name] = str(value)
-            elif target_type == "number":
-                obj[field_name] = float(value)
-            elif target_type == "integer":
-                obj[field_name] = int(float(value))  # handles "5.0" -> 5
-            elif target_type == "boolean":
-                if isinstance(value, bool):
-                    obj[field_name] = value
-                elif isinstance(value, str):
-                    obj[field_name] = value.lower() in ["true", "1", "yes"]
-                else:
-                    obj[field_name] = bool(value)
-            else:
-                # Unknown type fallback
-                obj[field_name] = str(value)
-        except Exception:
-            # Fallback: convert to string to avoid breaking Arrow
-            obj[field_name] = str(value)
+        if "string" in types and all(t in ["string", "null"] for t in types):
+            obj[name] = str(value)
+        elif "number" in types and not isinstance(value, float):
+            try:
+                obj[name] = float(value)
+            except Exception:
+                pass  # Let it fail if it's not castable
+        elif "integer" in types and not isinstance(value, int):
+            try:
+                obj[name] = int(float(value))
+            except Exception:
+                pass  # Let it fail gracefully
 
     return obj
 
