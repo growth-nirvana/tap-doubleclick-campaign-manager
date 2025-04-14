@@ -60,6 +60,22 @@ def parse_line(line):
 def transform_field(dfa_type, value):
     if value == '':
         return None
+    if dfa_type == 'double':
+        return float(value)
+    if dfa_type == 'long':
+        try:
+            return int(value)
+        except:
+            return None
+    if dfa_type == 'boolean':
+        value = value.lower().strip()
+        return (
+            value == 'true' or
+            value == 't' or
+            value == 'yes' or
+            value == 'y' or
+            value == '1'
+        )
 
     if isinstance(dfa_type, list):
         for t in dfa_type:
@@ -176,38 +192,44 @@ def process_file(service, fieldmap, report_config, file_id, report_time):
 def sync_report(service, field_type_lookup, profile_id, report_config):
     report_name = report_config.get("name")
     report_start_date = report_config.get("start_date")
-    
-    # Skip floodlight reports older than 60 days
-    if report_name and "floodlight" in report_name.lower():
-        try:
-            import pendulum
-            start_date = pendulum.parse(report_start_date)
-            if start_date < pendulum.now().subtract(days=60):
-                LOGGER.warning(f"Skipping floodlight report '{report_name}' because it's older than 60 days (start: {start_date.to_date_string()})")
-                return
-        except Exception as e:
-            LOGGER.error(f"Failed to parse start_date '{report_start_date}' for report '{report_name}': {e}")
-    
     report_id = report_config['report_id']
     stream_name = report_config['stream_name']
     stream_alias = report_config['stream_alias']
 
     LOGGER.info("%s: Starting sync", stream_name)
 
-    report = service.reports().get(profileId=profile_id, reportId=report_id).execute()
+    report = (
+        service
+        .reports()
+        .get(profileId=profile_id, reportId=report_id)
+        .execute()
+    )
+
     fieldmap = get_fields(field_type_lookup, report)
     schema = get_schema(stream_name, fieldmap)
     singer.write_schema(stream_name, schema, [], stream_alias=stream_alias)
 
     with singer.metrics.job_timer('run_report'):
         report_time = datetime.utcnow().isoformat() + 'Z'
-        report_file = service.reports().run(profileId=profile_id, reportId=report_id).execute()
+        report_file = (
+            service
+            .reports()
+            .run(profileId=profile_id, reportId=report_id)
+            .execute()
+        )
+
         report_file_id = report_file['id']
 
         sleep = 0
         start_time = time.time()
         while True:
-            report_file = service.files().get(reportId=report_id, fileId=report_file_id).execute()
+            report_file = (
+                service
+                .files()
+                .get(reportId=report_id, fileId=report_file_id)
+                .execute()
+            )
+
             status = report_file['status']
 
             if status == 'QUEUED':

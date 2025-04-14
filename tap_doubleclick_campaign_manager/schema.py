@@ -68,11 +68,7 @@ def convert_to_json_schema_type(non_json_type):
 def convert_to_json_schema_types(non_json_types):
     if isinstance(non_json_types, str):
         return [convert_to_json_schema_type(non_json_types)]
-
-    json_types = []
-    for non_json_type in non_json_types:
-        json_types.append(convert_to_json_schema_type(non_json_type))
-    return json_types
+    return [convert_to_json_schema_type(t) for t in non_json_types]
 
 def get_schema(stream_name, fieldmap):
     properties = {}
@@ -88,18 +84,23 @@ def get_schema(stream_name, fieldmap):
 
     for field in fieldmap:
         raw_type = field['type']
-        normalized = convert_to_json_schema_types(raw_type)
+        json_types = convert_to_json_schema_types(raw_type)
 
-        # Remove duplicates and ensure 'null' is first
-        base_types = list(set(normalized) - {'null'})
+        # Select preferred type (if multiple), log a warning
+        preferred_order = ['integer', 'number', 'boolean', 'string']
+        type_set = set(json_types)
+        type_set.discard('null')
+
+        selected_type = next((t for t in preferred_order if t in type_set), 'string')
+
         properties[field['name']] = {
-            'type': ['null'] + base_types
+            'type': ['null', selected_type]
         }
 
     schema = {
         'type': 'object',
         'properties': properties,
-        'additionalProperties': False  # fixed typo here
+        'additionalProperties': False
     }
 
     return schema
