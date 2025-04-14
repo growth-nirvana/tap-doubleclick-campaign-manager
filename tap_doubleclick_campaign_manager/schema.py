@@ -5,8 +5,7 @@ SINGER_REPORT_FIELD = '_sdc_report_time'
 REPORT_ID_FIELD = '_sdc_report_id'
 
 def get_field_type_lookup():
-    path = os.path.join(os.path.dirname(os.path.realpath(__file__)),
-                        'report_field_type_lookup.json')
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'report_field_type_lookup.json')
     with open(path) as file:
         return json.load(file)
 
@@ -43,6 +42,8 @@ def get_fields(field_type_lookup, report):
         criteria_obj = report['reachCriteria']
         dimensions = criteria_obj['dimensions']
         metric_names = criteria_obj['metricNames'] + criteria_obj['reachByFrequencyMetricNames']
+    else:
+        raise Exception(f"Unknown report type: {report_type}")
 
     dimensions = list(map(report_dimension_fn, dimensions))
     metric_names = list(map(report_dimension_fn, metric_names))
@@ -58,29 +59,20 @@ def get_fields(field_type_lookup, report):
     return fieldmap
 
 def convert_to_json_schema_type(non_json_type):
-
     if non_json_type == 'long':
         return 'integer'
-
     if non_json_type == 'double':
         return 'number'
-
     return non_json_type
 
-
 def convert_to_json_schema_types(non_json_types):
-
     if isinstance(non_json_types, str):
         return [convert_to_json_schema_type(non_json_types)]
 
     json_types = []
     for non_json_type in non_json_types:
-        json_types.append(
-            convert_to_json_schema_type(non_json_type)
-        )
-
+        json_types.append(convert_to_json_schema_type(non_json_type))
     return json_types
-
 
 def get_schema(stream_name, fieldmap):
     properties = {}
@@ -95,18 +87,19 @@ def get_schema(stream_name, fieldmap):
     }
 
     for field in fieldmap:
-        _type = field['type']
+        raw_type = field['type']
+        normalized = convert_to_json_schema_types(raw_type)
 
-        _type = convert_to_json_schema_types(_type)
-
+        # Remove duplicates and ensure 'null' is first
+        base_types = list(set(normalized) - {'null'})
         properties[field['name']] = {
-            'type': ['null'] + _type
+            'type': ['null'] + base_types
         }
 
     schema = {
         'type': 'object',
         'properties': properties,
-        'addtionalProperties': False
+        'additionalProperties': False  # fixed typo here
     }
 
     return schema
