@@ -11,6 +11,7 @@ from googleapiclient import http
 from tap_doubleclick_campaign_manager.schema import (
     SINGER_REPORT_FIELD,
     REPORT_ID_FIELD,
+    PROFILE_ID_FIELD,
     get_fields,
     get_schema,
     get_field_type_lookup
@@ -144,6 +145,7 @@ def process_file(service, fieldmap, report_config, file_id, report_time):
     report_id = report_config['report_id']
     stream_name = report_config['stream_name']
     stream_alias = report_config['stream_alias']
+    profile_id = report_config['profile_id']
     
     request = service.files().get_media(reportId=report_id, fileId=file_id)
     
@@ -201,6 +203,7 @@ def process_file(service, fieldmap, report_config, file_id, report_time):
                 
                 obj[SINGER_REPORT_FIELD] = report_time
                 obj[REPORT_ID_FIELD] = report_id_int
+                obj[PROFILE_ID_FIELD] = int(profile_id)
                 
                 obj = normalize_types(obj, fieldmap)
                 line_state['batch'].append(obj)
@@ -366,7 +369,8 @@ def sync_reports(service, config, catalog, state):
             reports.append({
                 'report_id': root_metadata['tap-doubleclick-campaign-manager.report-id'],
                 'stream_name': stream.tap_stream_id,
-                'stream_alias': stream.stream_alias
+                'stream_alias': stream.stream_alias,
+                'profile_id': profile_id
             })
 
     reports = sorted(reports, key=lambda x: x['report_id'])
