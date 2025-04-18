@@ -257,19 +257,42 @@ def get_date_chunks(start_date, end_date, chunk_size_days=FLOODLIGHT_MAX_DAYS):
 def update_report_date_range(service, profile_id, report_id, start_date, end_date):
     """Update the report's date range."""
     report = service.reports().get(profileId=profile_id, reportId=report_id).execute()
-    
+
+    date_range = {}
+    today = datetime.now().date()
+
     if report.get("type") == "FLOODLIGHT":
-        report["floodlightCriteria"]["dateRange"] = {
-            "startDate": start_date.strftime("%Y-%m-%d"),
-            "endDate": end_date.strftime("%Y-%m-%d")
-        }
+        # For floodlight reports, use the provided date range
+        if start_date and end_date:
+            date_range = {
+                "startDate": start_date.strftime("%Y-%m-%d"),
+                "endDate": end_date.strftime("%Y-%m-%d")
+            }
+        else:
+            LOGGER.warning("No valid start/end date found for floodlight report. Falling back to relativeDateRange=LAST_30_DAYS.")
+            date_range = {
+                "relativeDateRange": "LAST_30_DAYS"
+            }
+        report["floodlightCriteria"]["dateRange"] = date_range
     else:
-        report["criteria"]["dateRange"] = {
-            "startDate": start_date.strftime("%Y-%m-%d"),
-            "endDate": end_date.strftime("%Y-%m-%d")
+        # For standard reports, ensure we get at least the last year of data
+        if start_date:
+            # If the start date is more than a year old, adjust it to one year ago
+            one_year_ago = today - timedelta(days=365)
+            adjusted_start_date = max(start_date, one_year_ago)
+        else:
+            # If no start date, default to one year ago
+            adjusted_start_date = today - timedelta(days=365)
+
+        date_range = {
+            "startDate": adjusted_start_date.strftime("%Y-%m-%d"),
+            "endDate": today.strftime("%Y-%m-%d")
         }
-    
+        report["criteria"]["dateRange"] = date_range
+
+    LOGGER.info(f"Updated date range for report {report_id}: {date_range}")
     return service.reports().update(profileId=profile_id, reportId=report_id, body=report).execute()
+
 
 def sync_report(service, field_type_lookup, profile_id, report_config):
     report_name = report_config.get("name")
@@ -291,21 +314,16 @@ def sync_report(service, field_type_lookup, profile_id, report_config):
     schema = get_schema(stream_name, fieldmap)
     singer.write_schema(stream_name, schema, [], stream_alias=stream_alias)
 
-    # Get the report's date range
-    if report.get("type") == "FLOODLIGHT":
-        date_range = report.get("floodlightCriteria", {}).get("dateRange", {})
-    else:
-        date_range = report.get("criteria", {}).get("dateRange", {})
-
-    start_date = datetime.strptime(date_range.get("startDate", ""), "%Y-%m-%d").date()
-    end_date = datetime.strptime(date_range.get("endDate", ""), "%Y-%m-%d").date()
-
+    # Always use current date for end date and 2 months ago for start date
+    today = datetime.now().date()
+    two_months_ago = today - timedelta(days=60)
+    
     # For floodlight reports, split into chunks of 60 days
     if report.get("type") == "FLOODLIGHT":
-        date_chunks = get_date_chunks(start_date, end_date)
+        date_chunks = [(two_months_ago, today)]
         LOGGER.info("%s: Splitting into %d date chunks for floodlight report", stream_name, len(date_chunks))
     else:
-        date_chunks = [(start_date, end_date)]
+        date_chunks = [(two_months_ago, today)]
 
     for chunk_start, chunk_end in date_chunks:
         LOGGER.info("%s: Processing date range %s to %s", stream_name, chunk_start, chunk_end)
