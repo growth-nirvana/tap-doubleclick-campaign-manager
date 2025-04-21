@@ -126,34 +126,42 @@ def get_fields(field_type_lookup, report):
     metric_names = list(map(report_dimension_fn, metric_names))
     
     # Map all dimensions and metrics to Fivetran names
-    dimensions = [DIMENSION_MAPPING.get(d, d.lower().replace(' ', '_')) for d in dimensions]
-    metric_names = [METRIC_MAPPING.get(m, m.lower().replace(' ', '_')) for m in metric_names]
+    mapped_dimensions = []
+    for d in dimensions:
+        if d in DIMENSION_MAPPING:
+            mapped_dimensions.append(DIMENSION_MAPPING[d])
+        else:
+            mapped_dimensions.append(d.lower().replace(' ', '_'))
+    
+    mapped_metrics = []
+    for m in metric_names:
+        if m in METRIC_MAPPING:
+            mapped_metrics.append(METRIC_MAPPING[m])
+        else:
+            mapped_metrics.append(m.lower().replace(' ', '_'))
     
     # Convert any remaining camelCase to snake_case and handle compound words
     def camel_to_snake(name):
-        # Handle special cases first
-        if name in DIMENSION_MAPPING:
-            return DIMENSION_MAPPING[name]
-        if name in METRIC_MAPPING:
-            return METRIC_MAPPING[name]
-        
+        # Skip if already mapped
+        if name in mapped_dimensions or name in mapped_metrics:
+            return name
+            
         # First convert camelCase to snake_case
         s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
         s2 = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
         
         # Then handle compound words (e.g., totalconversions -> total_conversions)
-        # This regex looks for lowercase followed by uppercase and inserts an underscore
         s3 = re.sub(r'([a-z])([A-Z])', r'\1_\2', s2)
         
-        # Also handle cases where a word ends with a number (e.g., clickthroughconversions1 -> clickthrough_conversions_1)
+        # Also handle cases where a word ends with a number
         s4 = re.sub(r'([a-z])(\d)', r'\1_\2', s3)
         
         return s4.lower()
 
-    dimensions = [camel_to_snake(d) for d in dimensions]
-    metric_names = [camel_to_snake(m) for m in metric_names]
+    final_dimensions = [camel_to_snake(d) for d in mapped_dimensions]
+    final_metrics = [camel_to_snake(m) for m in mapped_metrics]
     
-    columns = dimensions + metric_names
+    columns = final_dimensions + final_metrics
 
     fieldmap = []
     for column in columns:
