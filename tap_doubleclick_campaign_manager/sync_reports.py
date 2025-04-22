@@ -141,7 +141,58 @@ def normalize_types(obj, fieldmap):
     return obj
 
 
-def process_file(service, fieldmap, report_config, file_id, report_time):
+def get_record_key(obj):
+    """Create a unique key for each record based on its identifying fields."""
+    # Only include fields that truly identify a unique record
+    key_fields = [
+        str(obj.get('activity_id', '')),
+        str(obj.get('ad_id', '')),
+        str(obj.get('advertiser_id', '')),
+        str(obj.get('campaign_id', '')),
+        str(obj.get('creative_id', '')),
+        str(obj.get('date', '')),
+        str(obj.get('floodlight_configuration', '')),
+        str(obj.get('package_roadblock_id', '')),
+        str(obj.get('paid_search_ad_group_id', '')),
+        str(obj.get('paid_search_advertiser_id', '')),
+        str(obj.get('paid_search_campaign_id', '')),
+        str(obj.get('paid_search_keyword_id', '')),
+        str(obj.get('placement_id', '')),
+        str(obj.get('profile_id', ''))
+    ]
+    return '|'.join(key_fields)
+
+def aggregate_metrics(existing_obj, new_obj):
+    """Aggregate numeric fields from new_obj into existing_obj."""
+    numeric_fields = [
+        'revenue',
+        'total_conversions',
+        'click_through_conversions',
+        'view_through_conversions',
+        'click_through_revenue',
+        'view_through_revenue'
+    ]
+    
+    for field in numeric_fields:
+        if field in new_obj and new_obj[field] is not None:
+            try:
+                new_val = float(new_obj[field])
+                if field in existing_obj and existing_obj[field] is not None:
+                    existing_val = float(existing_obj[field])
+                    existing_obj[field] = str(existing_val + new_val)
+                else:
+                    existing_obj[field] = str(new_val)
+            except (ValueError, TypeError):
+                LOGGER.debug(f"Failed to aggregate {field}: {new_obj[field]}")
+                pass
+    return existing_obj
+
+def process_file(service, fieldmap, report_config, file_id, report_time, processed_records=None):
+    """Process a report file and handle deduplication."""
+    if processed_records is None:
+        processed_records = {}
+        LOGGER.debug("Initialized empty processed_records dictionary")
+    
     report_id = report_config['report_id']
     stream_name = report_config['stream_name']
     stream_alias = report_config['stream_alias']
@@ -158,19 +209,18 @@ def process_file(service, fieldmap, report_config, file_id, report_time):
     }
     
     report_id_int = int(report_id)
-    BATCH_SIZE = 5000  # Keep the larger batch size for performance
+    BATCH_SIZE = 5000
     
     def process_batch(batch):
+        """Process a batch of records."""
         if not batch:
             return
         try:
-            # Process records individually but in a batch loop for better performance
             for record in batch:
                 singer.write_record(stream_name, record, stream_alias=stream_alias)
             line_state['count'] += len(batch)
         except Exception as e:
             LOGGER.error(f"Error writing batch of {len(batch)} records: {str(e)}")
-            # If batch fails, try individual records
             for record in batch:
                 try:
                     singer.write_record(stream_name, record, stream_alias=stream_alias)
@@ -181,6 +231,7 @@ def process_file(service, fieldmap, report_config, file_id, report_time):
         line_state['batch'] = []
     
     def line_transform(line):
+        """Transform and process each line of the report."""
         if not line_state['past_headers'] and not line_state['headers_line'] and line == 'Report Fields':
             line_state['headers_line'] = True
             return
@@ -195,6 +246,7 @@ def process_file(service, fieldmap, report_config, file_id, report_time):
                 return
             
             try:
+                # Create record object
                 obj = {}
                 for i in range(len(fieldmap)):
                     field = fieldmap[i]
@@ -206,11 +258,22 @@ def process_file(service, fieldmap, report_config, file_id, report_time):
                 obj[PROFILE_ID_FIELD] = int(profile_id)
                 
                 obj = normalize_types(obj, fieldmap)
-                line_state['batch'].append(obj)
-                line_state['count'] += 1
                 
-                if len(line_state['batch']) >= BATCH_SIZE:
-                    process_batch(line_state['batch'])
+                # Get record key and handle deduplication
+                record_key = get_record_key(obj)
+                if record_key in processed_records:
+                    # Aggregate metrics for existing record
+                    existing_obj = processed_records[record_key]
+                    processed_records[record_key] = aggregate_metrics(existing_obj, obj)
+                    LOGGER.debug(f"Aggregated metrics for record: {record_key}")
+                else:
+                    # New record
+                    processed_records[record_key] = obj
+                    line_state['batch'].append(obj)
+                    line_state['count'] += 1
+                    
+                    if len(line_state['batch']) >= BATCH_SIZE:
+                        process_batch(line_state['batch'])
                 
             except Exception as e:
                 LOGGER.warning(f"Error processing line: {str(e)}")
@@ -227,10 +290,10 @@ def process_file(service, fieldmap, report_config, file_id, report_time):
             except Exception as e:
                 LOGGER.error(f"Error downloading chunk: {str(e)}")
                 if 'quota' in str(e).lower():
-                    time.sleep(60)  # Wait a minute if we hit quota limits
+                    time.sleep(60)
                 continue
         
-        # Process any remaining records in the batch
+        # Process any remaining records
         process_batch(line_state['batch'])
         
     except Exception as e:
@@ -275,14 +338,14 @@ def update_report_date_range(service, profile_id, report_id, start_date, end_dat
             }
         report["floodlightCriteria"]["dateRange"] = date_range
     else:
-        # For standard reports, ensure we get at least the last year of data
+        # For standard reports, use two months of data
         if start_date:
-            # If the start date is more than a year old, adjust it to one year ago
-            one_year_ago = today - timedelta(days=365)
-            adjusted_start_date = max(start_date, one_year_ago)
+            # If the start date is more than two months old, adjust it to two months ago
+            two_months_ago = today - timedelta(days=60)
+            adjusted_start_date = max(start_date, two_months_ago)
         else:
-            # If no start date, default to one year ago
-            adjusted_start_date = today - timedelta(days=365)
+            # If no start date, default to two months ago
+            adjusted_start_date = today - timedelta(days=60)
 
         date_range = {
             "startDate": adjusted_start_date.strftime("%Y-%m-%d"),
@@ -295,6 +358,7 @@ def update_report_date_range(service, profile_id, report_id, start_date, end_dat
 
 
 def sync_report(service, field_type_lookup, profile_id, report_config):
+    """Sync a report and handle deduplication across chunks."""
     report_name = report_config.get("name")
     report_start_date = report_config.get("start_date")
     report_id = report_config['report_id']
@@ -314,6 +378,10 @@ def sync_report(service, field_type_lookup, profile_id, report_config):
     schema = get_schema(stream_name, fieldmap)
     singer.write_schema(stream_name, schema, [], stream_alias=stream_alias)
 
+    # Initialize processed_records as a dictionary
+    processed_records = {}
+    LOGGER.debug("Initialized processed_records dictionary for sync_report")
+
     # Always use current date for end date and 2 months ago for start date
     today = datetime.now().date()
     two_months_ago = today - timedelta(days=60)
@@ -321,9 +389,12 @@ def sync_report(service, field_type_lookup, profile_id, report_config):
     # For floodlight reports, split into chunks of 60 days
     if report.get("type") == "FLOODLIGHT":
         date_chunks = [(two_months_ago, today)]
-        LOGGER.info("%s: Splitting into %d date chunks for floodlight report", stream_name, len(date_chunks))
+        LOGGER.info("%s: Processing floodlight report for date range %s to %s", 
+                   stream_name, two_months_ago, today)
     else:
         date_chunks = [(two_months_ago, today)]
+        LOGGER.info("%s: Processing standard report for date range %s to %s", 
+                   stream_name, two_months_ago, today)
 
     for chunk_start, chunk_end in date_chunks:
         LOGGER.info("%s: Processing date range %s to %s", stream_name, chunk_start, chunk_end)
@@ -362,7 +433,8 @@ def sync_report(service, field_type_lookup, profile_id, report_config):
 
                 elif status == 'REPORT_AVAILABLE':
                     LOGGER.info('Report file %s had status of %s; beginning file processing.', report_file_id, status)
-                    process_file(service, fieldmap, report_config, report_file_id, report_time)
+                    # Pass the processed_records dictionary to process_file
+                    process_file(service, fieldmap, report_config, report_file_id, report_time, processed_records)
                     break
 
                 elif status != 'PROCESSING':
