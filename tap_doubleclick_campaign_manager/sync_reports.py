@@ -140,59 +140,8 @@ def normalize_types(obj, fieldmap):
 
     return obj
 
-
-def get_record_key(obj):
-    """Create a unique key for each record based on its identifying fields."""
-    # Only include fields that truly identify a unique record
-    key_fields = [
-        str(obj.get('activity_id', '')),
-        str(obj.get('ad_id', '')),
-        str(obj.get('advertiser_id', '')),
-        str(obj.get('campaign_id', '')),
-        str(obj.get('creative_id', '')),
-        str(obj.get('date', '')),
-        str(obj.get('floodlight_configuration', '')),
-        str(obj.get('package_roadblock_id', '')),
-        str(obj.get('paid_search_ad_group_id', '')),
-        str(obj.get('paid_search_advertiser_id', '')),
-        str(obj.get('paid_search_campaign_id', '')),
-        str(obj.get('paid_search_keyword_id', '')),
-        str(obj.get('placement_id', '')),
-        str(obj.get('profile_id', ''))
-    ]
-    return '|'.join(key_fields)
-
-def aggregate_metrics(existing_obj, new_obj):
-    """Aggregate numeric fields from new_obj into existing_obj."""
-    numeric_fields = [
-        'revenue',
-        'total_conversions',
-        'click_through_conversions',
-        'view_through_conversions',
-        'click_through_revenue',
-        'view_through_revenue'
-    ]
-    
-    for field in numeric_fields:
-        if field in new_obj and new_obj[field] is not None:
-            try:
-                new_val = float(new_obj[field])
-                if field in existing_obj and existing_obj[field] is not None:
-                    existing_val = float(existing_obj[field])
-                    existing_obj[field] = str(existing_val + new_val)
-                else:
-                    existing_obj[field] = str(new_val)
-            except (ValueError, TypeError):
-                LOGGER.debug(f"Failed to aggregate {field}: {new_obj[field]}")
-                pass
-    return existing_obj
-
 def process_file(service, fieldmap, report_config, file_id, report_time, processed_records=None):
-    """Process a report file and handle deduplication."""
-    if processed_records is None:
-        processed_records = {}
-        LOGGER.debug("Initialized empty processed_records dictionary")
-    
+    """Process a report file."""
     report_id = report_config['report_id']
     stream_name = report_config['stream_name']
     stream_alias = report_config['stream_alias']
@@ -259,21 +208,11 @@ def process_file(service, fieldmap, report_config, file_id, report_time, process
                 
                 obj = normalize_types(obj, fieldmap)
                 
-                # Get record key and handle deduplication
-                record_key = get_record_key(obj)
-                if record_key in processed_records:
-                    # Aggregate metrics for existing record
-                    existing_obj = processed_records[record_key]
-                    processed_records[record_key] = aggregate_metrics(existing_obj, obj)
-                    LOGGER.debug(f"Aggregated metrics for record: {record_key}")
-                else:
-                    # New record
-                    processed_records[record_key] = obj
-                    line_state['batch'].append(obj)
-                    line_state['count'] += 1
-                    
-                    if len(line_state['batch']) >= BATCH_SIZE:
-                        process_batch(line_state['batch'])
+                # Add to batch for processing
+                line_state['batch'].append(obj)
+                
+                if len(line_state['batch']) >= BATCH_SIZE:
+                    process_batch(line_state['batch'])
                 
             except Exception as e:
                 LOGGER.warning(f"Error processing line: {str(e)}")
@@ -304,6 +243,7 @@ def process_file(service, fieldmap, report_config, file_id, report_time, process
         with singer.metrics.record_counter(stream_name) as counter:
             counter.increment(line_state['count'])
         
+        LOGGER.info(f"Processed {line_state['count']} records")
         if line_state['errors'] > 0:
             LOGGER.warning(f"Completed with {line_state['errors']} errors out of {line_state['count']} records")
 
