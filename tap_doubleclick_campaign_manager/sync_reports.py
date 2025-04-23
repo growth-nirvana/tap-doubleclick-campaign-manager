@@ -278,14 +278,14 @@ def update_report_date_range(service, profile_id, report_id, start_date, end_dat
             }
         report["floodlightCriteria"]["dateRange"] = date_range
     else:
-        # For standard reports, use two months of data
+        # For standard reports, use one month of data
         if start_date:
-            # If the start date is more than two months old, adjust it to two months ago
-            two_months_ago = today - timedelta(days=60)
-            adjusted_start_date = max(start_date, two_months_ago)
+            # If the start date is more than one month old, adjust it to one month ago
+            one_month_ago = today - timedelta(days=30)
+            adjusted_start_date = max(start_date, one_month_ago)
         else:
-            # If no start date, default to two months ago
-            adjusted_start_date = today - timedelta(days=60)
+            # If no start date, default to one month ago
+            adjusted_start_date = today - timedelta(days=30)
 
         date_range = {
             "startDate": adjusted_start_date.strftime("%Y-%m-%d"),
@@ -322,19 +322,19 @@ def sync_report(service, field_type_lookup, profile_id, report_config):
     processed_records = {}
     LOGGER.debug("Initialized processed_records dictionary for sync_report")
 
-    # Always use current date for end date and 2 months ago for start date
+    # Always use current date for end date and 1 month ago for start date
     today = datetime.now().date()
-    two_months_ago = today - timedelta(days=60)
+    one_month_ago = today - timedelta(days=30)
     
-    # For floodlight reports, split into chunks of 60 days
+    # For floodlight reports, split into chunks of 30 days
     if report.get("type") == "FLOODLIGHT":
-        date_chunks = [(two_months_ago, today)]
+        date_chunks = [(one_month_ago, today)]
         LOGGER.info("%s: Processing floodlight report for date range %s to %s", 
-                   stream_name, two_months_ago, today)
+                   stream_name, one_month_ago, today)
     else:
-        date_chunks = [(two_months_ago, today)]
+        date_chunks = [(one_month_ago, today)]
         LOGGER.info("%s: Processing standard report for date range %s to %s", 
-                   stream_name, two_months_ago, today)
+                   stream_name, one_month_ago, today)
 
     for chunk_start, chunk_end in date_chunks:
         LOGGER.info("%s: Processing date range %s to %s", stream_name, chunk_start, chunk_end)
