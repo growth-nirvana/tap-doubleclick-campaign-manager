@@ -54,6 +54,17 @@ def next_sleep_interval(previous_sleep_interval):
     max_interval = previous_sleep_interval * 2 or MIN_RETRY_INTERVAL
     return min(MAX_RETRY_INTERVAL, random.randint(min_interval, max_interval))
 
+def handle_rate_limit_error(e, sleep_interval, stream_name, report_id, report_file_id):
+    """Handle rate limit errors with exponential backoff."""
+    if 'quota' in str(e).lower() or 'rateLimitExceeded' in str(e):
+        LOGGER.warning(
+            '%s: Rate limit exceeded for report_id %s / file_id %s. Sleeping for %s seconds',
+            stream_name, report_id, report_file_id, sleep_interval
+        )
+        time.sleep(sleep_interval)
+        return True
+    return False
+
 def parse_line(line):
     if not line or line.isspace():
         return None
@@ -355,33 +366,49 @@ def sync_report(service, field_type_lookup, profile_id, report_config):
 
             sleep = 0
             start_time = time.time()
+            retry_count = 0
+            MAX_RETRIES = 10  # Maximum number of retries for rate limits
+            
             while True:
-                report_file = (
-                    service
-                    .files()
-                    .get(reportId=report_id, fileId=report_file_id)
-                    .execute()
-                )
+                try:
+                    report_file = (
+                        service
+                        .files()
+                        .get(reportId=report_id, fileId=report_file_id)
+                        .execute()
+                    )
 
-                status = report_file['status']
+                    status = report_file['status']
 
-                if status == 'QUEUED':
-                    sleep = next_sleep_interval(sleep)
-                    LOGGER.info('%s: report_id %s / file_id %s - File status is %s, sleeping for %s seconds',
-                                stream_name, report_id, report_file_id, status, sleep)
-                    time.sleep(sleep)
+                    if status == 'QUEUED':
+                        sleep = next_sleep_interval(sleep)
+                        LOGGER.info('%s: report_id %s / file_id %s - File status is %s, sleeping for %s seconds',
+                                    stream_name, report_id, report_file_id, status, sleep)
+                        time.sleep(sleep)
 
-                elif status == 'REPORT_AVAILABLE':
-                    LOGGER.info('Report file %s had status of %s; beginning file processing.', report_file_id, status)
-                    # Pass the processed_records dictionary to process_file
-                    process_file(service, fieldmap, report_config, report_file_id, report_time, processed_records)
-                    break
+                    elif status == 'REPORT_AVAILABLE':
+                        LOGGER.info('Report file %s had status of %s; beginning file processing.', report_file_id, status)
+                        # Pass the processed_records dictionary to process_file
+                        process_file(service, fieldmap, report_config, report_file_id, report_time, processed_records)
+                        break
 
-                elif status != 'PROCESSING':
-                    message = ('%s: report_id %s / file_id %s - File status is %s, processing failed'
-                               % (stream_name, report_id, report_file_id, status))
-                    LOGGER.error(message)
-                    raise Exception(message)
+                    elif status != 'PROCESSING':
+                        message = ('%s: report_id %s / file_id %s - File status is %s, processing failed'
+                                   % (stream_name, report_id, report_file_id, status))
+                        LOGGER.error(message)
+                        raise Exception(message)
+
+                except Exception as e:
+                    if handle_rate_limit_error(e, sleep, stream_name, report_id, report_file_id):
+                        retry_count += 1
+                        if retry_count >= MAX_RETRIES:
+                            message = ('%s: report_id %s / file_id %s - Max retries for rate limits exceeded'
+                                       % (stream_name, report_id, report_file_id))
+                            LOGGER.error(message)
+                            raise Exception(message)
+                        continue
+                    else:
+                        raise
 
                 if time.time() - start_time > MAX_RETRY_ELAPSED_TIME:
                     message = ('%s: report_id %s / file_id %s - Max retry time exceeded'
