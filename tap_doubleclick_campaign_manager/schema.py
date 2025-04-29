@@ -4,12 +4,12 @@ import re
 
 DIMENSION_MAPPING = {
     # Floodlight variable dimensions
-    "floodlightVariableDimension1": "hotel_name",  # U1: Hotel Name
-    "floodlightVariableDimension2": "currency",  # U2: Currency
-    "floodlightVariableDimension11": "offer_code_used",  # U11: Offer Code Used
-    "floodlightVariableDimension16": "event",  # U16: Event
-    "floodlightVariableDimension19": "artist_name",  # U19: Artist Name
-    "floodlightVariableDimension20": "venue_name",  # U20: Venue Name
+    "floodlightVariableDimension1": "hotel_name_string_",  # U1: Hotel Name
+    "floodlightVariableDimension2": "currency_string_",  # U2: Currency
+    "floodlightVariableDimension11": "offer_code_used_string_",  # U11: Offer Code Used
+    "floodlightVariableDimension16": "event_string_",  # U16: Event
+    "floodlightVariableDimension19": "artist_name_string_",  # U19: Artist Name
+    "floodlightVariableDimension20": "venue_name_string_",  # U20: Venue Name
     
     # Standard DCM dimensions that need snake_case conversion
     "paidSearchCampaignId": "paid_search_campaign_id",
@@ -39,19 +39,19 @@ DIMENSION_MAPPING = {
 
 METRIC_MAPPING = {
     # Floodlight variable metrics from configuration
-    "floodlightVariableMetric3": "revenue",  # U3: Revenue
-    "floodlightVariableMetric4": "number_of_nights",  # U4: Number of Nights
-    "floodlightVariableMetric9": "number_of_children",  # U9: Number of Children
-    "floodlightVariableMetric10": "number_of_adults",  # U10: Number of Adults
-    "floodlightVariableMetric11": "offer_code_used",  # U11: Offer Code Used
-    "floodlightVariableMetric12": "purchase_price",  # U12: Purchase Price
-    "floodlightVariableMetric16": "event",  # U16: Event
-    "floodlightVariableMetric17": "tickets_purchased",  # U17: Tickets Purchased
-    "floodlightVariableMetric18": "revenue_star",  # U18: Revenue*
-    "floodlightVariableMetric19": "artist_name",  # U19: Artist Name
-    "floodlightVariableMetric20": "venue_name",  # U20: Venue Name
-    "floodlightVariableMetric24": "number_of_guests",  # U24: Number of Guests
-    "floodlightVariableMetric25": "transaction_id",  # U25: Transaction ID
+    "floodlightVariableMetric3": "revenue_number_",  # U3: Revenue
+    "floodlightVariableMetric4": "number_of_nights_number_",  # U4: Number of Nights
+    "floodlightVariableMetric9": "number_of_children_number_",  # U9: Number of Children
+    "floodlightVariableMetric10": "number_of_adults_number_",  # U10: Number of Adults
+    "floodlightVariableMetric11": "offer_code_used_number_",  # U11: Offer Code Used
+    "floodlightVariableMetric12": "purchase_price_number_",  # U12: Purchase Price
+    "floodlightVariableMetric16": "event_number_",  # U16: Event
+    "floodlightVariableMetric17": "tickets_purchased_number_",  # U17: Tickets Purchased
+    "floodlightVariableMetric18": "revenue_star_number",  # U18: Revenue*
+    "floodlightVariableMetric19": "artist_name_number_",  # U19: Artist Name
+    "floodlightVariableMetric20": "venue_name_number_",  # U20: Venue Name
+    "floodlightVariableMetric24": "number_of_guests_number_",  # U24: Number of Guests
+    "floodlightVariableMetric25": "transaction_id_number_",  # U25: Transaction ID
     
     # Activity metrics
     "activityViewThroughRevenue": "view_through_revenue",
