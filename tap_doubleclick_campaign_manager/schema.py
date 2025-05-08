@@ -112,13 +112,13 @@ def get_fields(field_type_lookup, report):
         dimensions = (
             criteria_obj['conversionDimensions'] +
             criteria_obj['perInteractionDimensions'] +
-            criteria_obj['customFloodlightVariables']
+            (criteria_obj.get('customFloodlightVariables', []) or [])
         )
         metric_names = criteria_obj['metricNames']
     elif report_type == 'REACH':
         criteria_obj = report['reachCriteria']
         dimensions = criteria_obj['dimensions']
-        metric_names = criteria_obj['metricNames'] + criteria_obj['reachByFrequencyMetricNames']
+        metric_names = criteria_obj['metricNames'] + (criteria_obj.get('reachByFrequencyMetricNames', []) or [])
     else:
         raise Exception(f"Unknown report type: {report_type}")
 
