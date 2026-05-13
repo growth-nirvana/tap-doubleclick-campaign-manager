@@ -258,17 +258,63 @@ def process_file(service, fieldmap, report_config, file_id, report_time, process
         if line_state['errors'] > 0:
             LOGGER.warning(f"Completed with {line_state['errors']} errors out of {line_state['count']} records")
 
+def parse_config_date(value):
+    """Parse an ISO date or datetime string from config to a date."""
+    if value is None or value == '':
+        return None
+    s = str(value).strip()
+    if 'T' in s:
+        norm = s.replace('Z', '+00:00') if s.endswith('Z') else s
+        return datetime.fromisoformat(norm).date()
+    return datetime.strptime(s[:10], '%Y-%m-%d').date()
+
+
+def resolve_sync_date_range(config):
+    """
+    Optional CM360 report window from config: ``start_date`` + ``end_date`` (inclusive).
+
+    When either key is missing, the tap uses the default rolling last-30-days window.
+
+    Returns:
+        (start_date, end_date) if both keys are set and valid
+        None for the default rolling window
+    """
+    start_raw = config.get('start_date')
+    end_raw = config.get('end_date')
+    if start_raw is None and end_raw is None:
+        return None
+    if start_raw is None or end_raw is None:
+        LOGGER.warning(
+            'start_date and end_date must both be set to use a custom report range; '
+            'using default last-30-days window instead.'
+        )
+        return None
+    start_d = parse_config_date(start_raw)
+    end_d = parse_config_date(end_raw)
+    if start_d > end_d:
+        LOGGER.warning(
+            'start_date (%s) is after end_date (%s); using default last-30-days window instead.',
+            start_d, end_d,
+        )
+        return None
+    return (start_d, end_d)
+
+
 def get_date_chunks(start_date, end_date, chunk_size_days=FLOODLIGHT_MAX_DAYS):
-    """Generate date chunks for floodlight reports."""
+    """Generate date chunks for floodlight reports. start_date and end_date are inclusive."""
     chunks = []
     current_start = start_date
-    while current_start < end_date:
+    while current_start <= end_date:
         current_end = min(current_start + timedelta(days=chunk_size_days), end_date)
         chunks.append((current_start, current_end))
+        if current_end >= end_date:
+            break
         current_start = current_end + timedelta(days=1)
     return chunks
 
-def update_report_date_range(service, profile_id, report_id, start_date, end_date):
+def update_report_date_range(
+    service, profile_id, report_id, start_date, end_date, custom_range=False
+):
     """Update the report's date range."""
     report = service.reports().get(profileId=profile_id, reportId=report_id).execute()
 
@@ -289,29 +335,32 @@ def update_report_date_range(service, profile_id, report_id, start_date, end_dat
             }
         report["floodlightCriteria"]["dateRange"] = date_range
     else:
-        # For standard reports, use one month of data
-        if start_date:
-            # If the start date is more than one month old, adjust it to one month ago
-            one_month_ago = today - timedelta(days=30)
-            adjusted_start_date = max(start_date, one_month_ago)
+        if custom_range and start_date and end_date:
+            date_range = {
+                "startDate": start_date.strftime("%Y-%m-%d"),
+                "endDate": end_date.strftime("%Y-%m-%d")
+            }
         else:
-            # If no start date, default to one month ago
-            adjusted_start_date = today - timedelta(days=30)
+            # For standard reports, use one month of data (rolling window)
+            if start_date:
+                one_month_ago = today - timedelta(days=30)
+                adjusted_start_date = max(start_date, one_month_ago)
+            else:
+                adjusted_start_date = today - timedelta(days=30)
 
-        date_range = {
-            "startDate": adjusted_start_date.strftime("%Y-%m-%d"),
-            "endDate": today.strftime("%Y-%m-%d")
-        }
+            date_range = {
+                "startDate": adjusted_start_date.strftime("%Y-%m-%d"),
+                "endDate": today.strftime("%Y-%m-%d")
+            }
         report["criteria"]["dateRange"] = date_range
 
     LOGGER.info(f"Updated date range for report {report_id}: {date_range}")
     return service.reports().update(profileId=profile_id, reportId=report_id, body=report).execute()
 
 
-def sync_report(service, field_type_lookup, profile_id, report_config):
+def sync_report(service, field_type_lookup, profile_id, report_config, sync_date_range=None):
     """Sync a report and handle deduplication across chunks."""
     report_name = report_config.get("name")
-    report_start_date = report_config.get("start_date")
     report_id = report_config['report_id']
     stream_name = report_config['stream_name']
     stream_alias = report_config['stream_alias']
@@ -333,25 +382,36 @@ def sync_report(service, field_type_lookup, profile_id, report_config):
     processed_records = {}
     LOGGER.debug("Initialized processed_records dictionary for sync_report")
 
-    # Always use current date for end date and 1 month ago for start date
+    custom_range = sync_date_range is not None
     today = datetime.now().date()
     one_month_ago = today - timedelta(days=30)
-    
-    # For floodlight reports, split into chunks of 30 days
-    if report.get("type") == "FLOODLIGHT":
-        date_chunks = [(one_month_ago, today)]
-        LOGGER.info("%s: Processing floodlight report for date range %s to %s", 
-                   stream_name, one_month_ago, today)
+
+    if sync_date_range:
+        range_start, range_end = sync_date_range
+        if report.get("type") == "FLOODLIGHT":
+            date_chunks = get_date_chunks(range_start, range_end)
+        else:
+            date_chunks = [(range_start, range_end)]
+        LOGGER.info(
+            "%s: Custom report window %s to %s (%d chunk(s))",
+            stream_name, range_start, range_end, len(date_chunks),
+        )
     else:
         date_chunks = [(one_month_ago, today)]
-        LOGGER.info("%s: Processing standard report for date range %s to %s", 
-                   stream_name, one_month_ago, today)
+        if report.get("type") == "FLOODLIGHT":
+            LOGGER.info("%s: Processing floodlight report for date range %s to %s",
+                       stream_name, one_month_ago, today)
+        else:
+            LOGGER.info("%s: Processing standard report for date range %s to %s",
+                       stream_name, one_month_ago, today)
 
     for chunk_start, chunk_end in date_chunks:
         LOGGER.info("%s: Processing date range %s to %s", stream_name, chunk_start, chunk_end)
         
         # Update report date range for this chunk
-        updated_report = update_report_date_range(service, profile_id, report_id, chunk_start, chunk_end)
+        updated_report = update_report_date_range(
+            service, profile_id, report_id, chunk_start, chunk_end, custom_range=custom_range
+        )
         
         with singer.metrics.job_timer('run_report'):
             report_time = datetime.utcnow().isoformat() + 'Z'
@@ -418,6 +478,7 @@ def sync_report(service, field_type_lookup, profile_id, report_config):
 
 def sync_reports(service, config, catalog, state):
     profile_id = config.get('profile_id')
+    sync_date_range = resolve_sync_date_range(config)
     reports = []
     for stream in catalog.streams:
         mdata = singer.metadata.to_map(stream.metadata)
@@ -450,7 +511,7 @@ def sync_reports(service, config, catalog, state):
         state['current_report'] = report_id
         singer.write_state(state)
 
-        sync_report(service, field_type_lookup, profile_id, report_config)
+        sync_report(service, field_type_lookup, profile_id, report_config, sync_date_range)
 
     state['reports'] = None
     state['current_report'] = None
