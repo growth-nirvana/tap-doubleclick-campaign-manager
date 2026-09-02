@@ -54,16 +54,66 @@ def next_sleep_interval(previous_sleep_interval):
     max_interval = previous_sleep_interval * 2 or MIN_RETRY_INTERVAL
     return min(MAX_RETRY_INTERVAL, random.randint(min_interval, max_interval))
 
-def handle_rate_limit_error(e, sleep_interval, stream_name, report_id, report_file_id):
-    """Handle rate limit errors with exponential backoff."""
-    if 'quota' in str(e).lower() or 'rateLimitExceeded' in str(e):
-        LOGGER.warning(
-            '%s: Rate limit exceeded for report_id %s / file_id %s. Sleeping for %s seconds',
-            stream_name, report_id, report_file_id, sleep_interval
-        )
-        time.sleep(sleep_interval)
+def is_transient_api_error(e):
+    """
+    Return True for API errors that are usually safe to retry with backoff.
+
+    Covers quota/rate limits and transient Google backend outages (e.g. HTTP 503
+    backendError seen while polling report file status).
+    """
+    message = str(e).lower()
+    transient_tokens = (
+        'quota',
+        'ratelimitexceeded',
+        'userratelimitexceeded',
+        'backenderror',
+        'backend error',
+        'the service is currently unavailable',
+        'internalerror',
+        'internal error',
+        'unavailable',
+        'temporarily unavailable',
+        'deadline exceeded',
+        'connection reset',
+        'connection aborted',
+        'broken pipe',
+        'timed out',
+        'timeout',
+    )
+    if any(token in message for token in transient_tokens):
+        return True
+
+    # googleapiclient.errors.HttpError exposes resp.status
+    resp = getattr(e, 'resp', None)
+    status = getattr(resp, 'status', None)
+    if status in (408, 429, 500, 502, 503, 504):
         return True
     return False
+
+def handle_transient_api_error(e, sleep_interval, stream_name, report_id, report_file_id):
+    """
+    Sleep and retry on transient API errors.
+
+    Returns (handled, next_sleep_interval). When handled is False, callers should
+    re-raise. Sleep interval is always advanced so the first retry never sleeps 0s.
+    """
+    if not is_transient_api_error(e):
+        return False, sleep_interval
+
+    sleep_for = sleep_interval or next_sleep_interval(0)
+    LOGGER.warning(
+        '%s: Transient API error for report_id %s / file_id %s (%s). Sleeping for %s seconds',
+        stream_name, report_id, report_file_id, e, sleep_for
+    )
+    time.sleep(sleep_for)
+    return True, next_sleep_interval(sleep_for)
+
+# Backwards-compatible alias
+def handle_rate_limit_error(e, sleep_interval, stream_name, report_id, report_file_id):
+    handled, _ = handle_transient_api_error(
+        e, sleep_interval, stream_name, report_id, report_file_id
+    )
+    return handled
 
 def parse_line(line):
     if not line or line.isspace():
@@ -234,14 +284,28 @@ def process_file(service, fieldmap, report_config, file_id, report_time, process
         downloader = http.MediaIoBaseDownload(stream, request, chunksize=CHUNK_SIZE)
         download_finished = False
         
+        download_sleep = 0
+        download_retries = 0
+        MAX_DOWNLOAD_RETRIES = 20
+
         while not download_finished:
             try:
                 _, download_finished = downloader.next_chunk()
+                download_retries = 0
             except Exception as e:
+                if is_transient_api_error(e) and download_retries < MAX_DOWNLOAD_RETRIES:
+                    download_retries += 1
+                    download_sleep = next_sleep_interval(download_sleep)
+                    LOGGER.warning(
+                        '%s: Transient error downloading report_id %s / file_id %s '
+                        '(attempt %s/%s): %s. Sleeping for %s seconds',
+                        stream_name, report_id, file_id, download_retries,
+                        MAX_DOWNLOAD_RETRIES, e, download_sleep
+                    )
+                    time.sleep(download_sleep)
+                    continue
                 LOGGER.error(f"Error downloading chunk: {str(e)}")
-                if 'quota' in str(e).lower():
-                    time.sleep(60)
-                continue
+                raise
         
         # Process any remaining records
         process_batch(line_state['batch'])
@@ -427,7 +491,7 @@ def sync_report(service, field_type_lookup, profile_id, report_config, sync_date
             sleep = 0
             start_time = time.time()
             retry_count = 0
-            MAX_RETRIES = 10  # Maximum number of retries for rate limits
+            MAX_RETRIES = 25  # Transient API errors while polling file status
             
             while True:
                 try:
@@ -446,29 +510,38 @@ def sync_report(service, field_type_lookup, profile_id, report_config, sync_date
                                     stream_name, report_id, report_file_id, status, sleep)
                         time.sleep(sleep)
 
+                    elif status == 'PROCESSING':
+                        # Avoid hammering the API while CM360 is still working
+                        sleep = next_sleep_interval(sleep)
+                        LOGGER.info('%s: report_id %s / file_id %s - File status is %s, sleeping for %s seconds',
+                                    stream_name, report_id, report_file_id, status, sleep)
+                        time.sleep(sleep)
+
                     elif status == 'REPORT_AVAILABLE':
                         LOGGER.info('Report file %s had status of %s; beginning file processing.', report_file_id, status)
                         # Pass the processed_records dictionary to process_file
                         process_file(service, fieldmap, report_config, report_file_id, report_time, processed_records)
                         break
 
-                    elif status != 'PROCESSING':
+                    else:
                         message = ('%s: report_id %s / file_id %s - File status is %s, processing failed'
                                    % (stream_name, report_id, report_file_id, status))
                         LOGGER.error(message)
                         raise Exception(message)
 
                 except Exception as e:
-                    if handle_rate_limit_error(e, sleep, stream_name, report_id, report_file_id):
+                    handled, sleep = handle_transient_api_error(
+                        e, sleep, stream_name, report_id, report_file_id
+                    )
+                    if handled:
                         retry_count += 1
                         if retry_count >= MAX_RETRIES:
-                            message = ('%s: report_id %s / file_id %s - Max retries for rate limits exceeded'
+                            message = ('%s: report_id %s / file_id %s - Max retries for transient API errors exceeded'
                                        % (stream_name, report_id, report_file_id))
                             LOGGER.error(message)
                             raise Exception(message)
                         continue
-                    else:
-                        raise
+                    raise
 
                 if time.time() - start_time > MAX_RETRY_ELAPSED_TIME:
                     message = ('%s: report_id %s / file_id %s - Max retry time exceeded'

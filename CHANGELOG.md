@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.2
+  * Paginate through all CM360 reports during discover instead of returning only the first page (default page size of 10)
+
+## 1.5.1
+  * Retry transient Google API errors (HTTP 503/500/backendError) while polling and downloading report files
+  * Back off while report files are in `PROCESSING`, not only `QUEUED`
+
 ## 1.4.1
   * Explicitly tolerate file status of 'QUEUED' [#27](https://github.com/singer-io/tap-doubleclick-campaign-manager/pull/27)
 

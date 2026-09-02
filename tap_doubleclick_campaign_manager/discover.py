@@ -1,4 +1,6 @@
 import re
+
+import singer
 from singer.catalog import Catalog, CatalogEntry, Schema
 from tap_doubleclick_campaign_manager.schema import (
     SINGER_REPORT_FIELD,
@@ -7,22 +9,49 @@ from tap_doubleclick_campaign_manager.schema import (
     get_field_type_lookup
 )
 
+LOGGER = singer.get_logger()
+
 
 def sanitize_name(report_name):
     report_name = re.sub(r'[\s\-\/]', '_', report_name.lower())
     return re.sub(r'[^a-z0-9_]', '', report_name)
 
 
+def list_all_reports(service, profile_id):
+    """Fetch all reports for a profile, paging through reports.list results."""
+    reports = []
+    page_token = None
+    page_count = 0
+
+    while True:
+        request_kwargs = {
+            'profileId': profile_id,
+            'maxResults': 10,
+        }
+        if page_token:
+            request_kwargs['pageToken'] = page_token
+
+        response = service.reports().list(**request_kwargs).execute()
+        reports.extend(response.get('items', []))
+        page_count += 1
+
+        page_token = response.get('nextPageToken')
+        if not page_token:
+            break
+
+    LOGGER.info(
+        "Discovered %d report(s) across %d page(s) for profile %s",
+        len(reports),
+        page_count,
+        profile_id,
+    )
+    return reports
+
+
 def discover_streams(service, config):
     profile_id = config.get('profile_id')
 
-    reports = (
-        service
-        .reports()
-        .list(profileId=profile_id)
-        .execute()
-        .get('items', [])
-    )
+    reports = list_all_reports(service, profile_id)
 
     reports = sorted(reports, key=lambda x: x['id'])
     report_configs = {}
