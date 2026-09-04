@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.5.5
+  * Reuse existing QUEUED/PROCESSING report files for the same date range instead of submitting duplicate runs on job retry
+
 ## 1.5.4
   * Increase report file polling timeout from 1 hour to 5 hours while waiting for CM360 QUEUED/PROCESSING reports
 

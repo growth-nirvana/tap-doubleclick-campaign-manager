@@ -7,6 +7,9 @@ from tap_doubleclick_campaign_manager.sync_reports import (
     resolve_sync_date_range,
     get_date_chunks,
     is_transient_api_error,
+    date_ranges_match,
+    find_in_flight_report_file,
+    run_or_reuse_report_file,
 )
 
 import unittest
@@ -107,3 +110,167 @@ class TestSyncReports(unittest.TestCase):
     def test_is_transient_api_error_rejects_permanent_errors(self):
         self.assertFalse(is_transient_api_error(Exception('404 Not Found')))
         self.assertFalse(is_transient_api_error(Exception('File status is FAILED')))
+
+    def test_date_ranges_match_compares_absolute_dates(self):
+        expected = {'startDate': '2026-08-05', 'endDate': '2026-09-04'}
+        matching = {'startDate': '2026-08-05', 'endDate': '2026-09-04'}
+        different = {'startDate': '2026-07-06', 'endDate': '2026-09-04'}
+
+        self.assertTrue(date_ranges_match(matching, expected))
+        self.assertFalse(date_ranges_match(different, expected))
+
+    def test_date_ranges_match_compares_relative_ranges(self):
+        expected = {'relativeDateRange': 'LAST_30_DAYS'}
+        matching = {'relativeDateRange': 'LAST_30_DAYS'}
+        different = {'relativeDateRange': 'LAST_7_DAYS'}
+
+        self.assertTrue(date_ranges_match(matching, expected))
+        self.assertFalse(date_ranges_match(different, expected))
+
+
+class FakeFilesListRequest:
+    def __init__(self, resource, kwargs):
+        self.resource = resource
+        self.kwargs = kwargs
+
+    def execute(self):
+        return self.resource._execute_list(self.kwargs)
+
+
+class FakeReportFilesResource:
+    def __init__(self, pages):
+        self.pages = pages
+        self.list_calls = []
+        self.run_calls = 0
+
+    def list(self, **kwargs):
+        self.list_calls.append(kwargs)
+        return FakeFilesListRequest(self, kwargs)
+
+    def _execute_list(self, kwargs):
+        page_token = kwargs.get('pageToken')
+        page_index = 0 if page_token is None else int(page_token)
+        page = self.pages[page_index]
+        response = {'items': page.get('items', [])}
+        if 'nextPageToken' in page:
+            response['nextPageToken'] = page['nextPageToken']
+        return response
+
+
+class FakeReportsResource:
+    def __init__(self, files_resource):
+        self._files = files_resource
+        self.run_calls = 0
+
+    def files(self):
+        return self._files
+
+    def run(self, **kwargs):
+        self.run_calls += 1
+        return FakeRunRequest(self)
+
+
+class FakeRunRequest:
+    def __init__(self, reports_resource):
+        self.reports_resource = reports_resource
+
+    def execute(self):
+        return {
+            'id': '999',
+            'status': 'QUEUED',
+            'dateRange': {
+                'startDate': '2026-08-05',
+                'endDate': '2026-09-04',
+            },
+            'lastModifiedTime': '1000',
+        }
+
+
+class FakeService:
+    def __init__(self, pages):
+        self._files = FakeReportFilesResource(pages)
+        self._reports = FakeReportsResource(self._files)
+
+    def reports(self):
+        return self._reports
+
+
+class TestInFlightReportReuse(unittest.TestCase):
+
+    def test_find_in_flight_report_file_returns_oldest_matching_file(self):
+        pages = [{
+            'items': [
+                {
+                    'id': '200',
+                    'status': 'QUEUED',
+                    'lastModifiedTime': '2000',
+                    'dateRange': {'startDate': '2026-08-05', 'endDate': '2026-09-04'},
+                },
+                {
+                    'id': '100',
+                    'status': 'QUEUED',
+                    'lastModifiedTime': '1000',
+                    'dateRange': {'startDate': '2026-08-05', 'endDate': '2026-09-04'},
+                },
+                {
+                    'id': '300',
+                    'status': 'REPORT_AVAILABLE',
+                    'lastModifiedTime': '3000',
+                    'dateRange': {'startDate': '2026-08-05', 'endDate': '2026-09-04'},
+                },
+            ],
+        }]
+        service = FakeService(pages)
+        expected = {'startDate': '2026-08-05', 'endDate': '2026-09-04'}
+
+        actual = find_in_flight_report_file(service, 'profile-1', 'report-1', expected)
+
+        self.assertEqual(actual['id'], '100')
+
+    def test_find_in_flight_report_file_ignores_different_date_range(self):
+        pages = [{
+            'items': [{
+                'id': '100',
+                'status': 'PROCESSING',
+                'lastModifiedTime': '1000',
+                'dateRange': {'startDate': '2026-07-06', 'endDate': '2026-09-04'},
+            }],
+        }]
+        service = FakeService(pages)
+        expected = {'startDate': '2026-08-05', 'endDate': '2026-09-04'}
+
+        actual = find_in_flight_report_file(service, 'profile-1', 'report-1', expected)
+
+        self.assertIsNone(actual)
+
+    def test_run_or_reuse_report_file_reuses_existing_in_flight_file(self):
+        pages = [{
+            'items': [{
+                'id': '100',
+                'status': 'QUEUED',
+                'lastModifiedTime': '1000',
+                'dateRange': {'startDate': '2026-08-05', 'endDate': '2026-09-04'},
+            }],
+        }]
+        service = FakeService(pages)
+        expected = {'startDate': '2026-08-05', 'endDate': '2026-09-04'}
+
+        report_file, reused = run_or_reuse_report_file(
+            service, 'profile-1', 'report-1', expected, 'stream'
+        )
+
+        self.assertTrue(reused)
+        self.assertEqual(report_file['id'], '100')
+        self.assertEqual(service.reports().run_calls, 0)
+
+    def test_run_or_reuse_report_file_submits_new_run_when_none_in_flight(self):
+        service = FakeService([{'items': []}])
+        expected = {'startDate': '2026-08-05', 'endDate': '2026-09-04'}
+
+        report_file, reused = run_or_reuse_report_file(
+            service, 'profile-1', 'report-1', expected, 'stream'
+        )
+
+        self.assertFalse(reused)
+        self.assertEqual(report_file['id'], '999')
+        self.assertEqual(service.reports().run_calls, 1)

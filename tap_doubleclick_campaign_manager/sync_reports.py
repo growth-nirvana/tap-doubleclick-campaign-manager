@@ -24,6 +24,8 @@ MAX_RETRY_INTERVAL = 300  # 5 minutes
 MAX_RETRY_ELAPSED_TIME = 18000  # 5 hours
 CHUNK_SIZE = 16 * 1024 * 1024  # 16 MB
 FLOODLIGHT_MAX_DAYS = 60  # Maximum days for floodlight reports
+IN_FLIGHT_FILE_STATUSES = ('QUEUED', 'PROCESSING')
+IN_FLIGHT_FILE_LIST_MAX_PAGES = 5
 
 class StreamFunc(object):
     def __init__(self, func):
@@ -422,6 +424,102 @@ def update_report_date_range(
     return service.reports().update(profileId=profile_id, reportId=report_id, body=report).execute()
 
 
+def report_date_range(report):
+    """Return the date range dict from a report resource."""
+    if report.get('type') == 'FLOODLIGHT':
+        return (report.get('floodlightCriteria') or {}).get('dateRange')
+    return (report.get('criteria') or {}).get('dateRange')
+
+
+def date_ranges_match(file_date_range, expected_date_range):
+    """Return True when a report file's date range matches the expected run window."""
+    if not file_date_range or not expected_date_range:
+        return False
+
+    file_relative = file_date_range.get('relativeDateRange')
+    expected_relative = expected_date_range.get('relativeDateRange')
+    if file_relative or expected_relative:
+        return file_relative == expected_relative
+
+    return (
+        file_date_range.get('startDate') == expected_date_range.get('startDate') and
+        file_date_range.get('endDate') == expected_date_range.get('endDate')
+    )
+
+
+def find_in_flight_report_file(service, profile_id, report_id, expected_date_range):
+    """
+    Find an existing QUEUED or PROCESSING file for a report and date range.
+
+    Returns the oldest matching in-flight file so job retries resume polling
+    instead of submitting duplicate report runs.
+    """
+    matches = []
+    page_token = None
+    pages = 0
+
+    while pages < IN_FLIGHT_FILE_LIST_MAX_PAGES:
+        request_kwargs = {
+            'profileId': profile_id,
+            'reportId': report_id,
+            'maxResults': 10,
+            'sortField': 'LAST_MODIFIED_TIME',
+            'sortOrder': 'ASCENDING',
+        }
+        if page_token:
+            request_kwargs['pageToken'] = page_token
+
+        response = service.reports().files().list(**request_kwargs).execute()
+        pages += 1
+
+        for report_file in response.get('items', []):
+            status = report_file.get('status')
+            if status not in IN_FLIGHT_FILE_STATUSES:
+                continue
+            if date_ranges_match(report_file.get('dateRange'), expected_date_range):
+                matches.append(report_file)
+
+        page_token = response.get('nextPageToken')
+        if not page_token:
+            break
+
+    if not matches:
+        return None
+
+    return min(matches, key=lambda report_file: int(report_file.get('lastModifiedTime', 0)))
+
+
+def run_or_reuse_report_file(service, profile_id, report_id, expected_date_range, stream_name):
+    """Submit a report run or reuse an existing in-flight file for the same window."""
+    existing_file = find_in_flight_report_file(
+        service, profile_id, report_id, expected_date_range
+    )
+    if existing_file is not None:
+        LOGGER.info(
+            '%s: Reusing in-flight report file %s (status=%s) for report_id %s instead of submitting a new run',
+            stream_name,
+            existing_file['id'],
+            existing_file.get('status'),
+            report_id,
+        )
+        return existing_file, True
+
+    report_file = (
+        service
+        .reports()
+        .run(profileId=profile_id, reportId=report_id)
+        .execute()
+    )
+    LOGGER.info(
+        '%s: Submitted new report run for report_id %s (file_id %s, status=%s)',
+        stream_name,
+        report_id,
+        report_file['id'],
+        report_file.get('status'),
+    )
+    return report_file, False
+
+
 def sync_report(service, field_type_lookup, profile_id, report_config, sync_date_range=None):
     """Sync a report and handle deduplication across chunks."""
     report_name = report_config.get("name")
@@ -479,17 +577,22 @@ def sync_report(service, field_type_lookup, profile_id, report_config, sync_date
         
         with singer.metrics.job_timer('run_report'):
             report_time = datetime.utcnow().isoformat() + 'Z'
-            report_file = (
-                service
-                .reports()
-                .run(profileId=profile_id, reportId=report_id)
-                .execute()
+            expected_date_range = report_date_range(updated_report)
+            report_file, reused_file = run_or_reuse_report_file(
+                service,
+                profile_id,
+                report_id,
+                expected_date_range,
+                stream_name,
             )
 
             report_file_id = report_file['id']
 
             sleep = 0
-            start_time = time.time()
+            if reused_file and report_file.get('lastModifiedTime'):
+                start_time = int(report_file['lastModifiedTime']) / 1000
+            else:
+                start_time = time.time()
             retry_count = 0
             MAX_RETRIES = 25  # Transient API errors while polling file status
             
