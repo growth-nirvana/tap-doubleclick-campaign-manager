@@ -21,7 +21,7 @@ LOGGER = singer.get_logger()
 
 MIN_RETRY_INTERVAL = 2  # 10 seconds
 MAX_RETRY_INTERVAL = 300  # 5 minutes
-MAX_RETRY_ELAPSED_TIME = 3600  # 1 hour
+MAX_RETRY_ELAPSED_TIME = 18000  # 5 hours
 CHUNK_SIZE = 16 * 1024 * 1024  # 16 MB
 FLOODLIGHT_MAX_DAYS = 60  # Maximum days for floodlight reports
 

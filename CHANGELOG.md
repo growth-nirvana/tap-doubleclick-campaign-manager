@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.5.4
+  * Increase report file polling timeout from 1 hour to 5 hours while waiting for CM360 QUEUED/PROCESSING reports
+
 ## 1.5.3
   * Skip reports during discover that cannot be converted to catalog streams instead of failing the entire discover run
 
