@@ -128,6 +128,24 @@ class TestDiscoverStreams(unittest.TestCase):
             {'first_report_100', 'second_report_200'},
         )
 
+    def test_discover_streams_skips_reports_with_invalid_schema(self):
+        valid_report = _make_report('100', 'Valid Report')
+        invalid_report = {
+            'id': '200',
+            'name': 'Invalid Report',
+            'type': 'STANDARD',
+            'criteria': {
+                'dimensions': ['cookieReachTotalReach'],
+            },
+        }
+        service = FakeService([{'items': [valid_report, invalid_report]}])
+        config = {'profile_id': 'profile-123'}
+
+        catalog = discover_streams(service, config)
+
+        stream_ids = {stream['tap_stream_id'] for stream in catalog['streams']}
+        self.assertEqual(stream_ids, {'valid_report_100'})
+
 
 if __name__ == '__main__':
     unittest.main()

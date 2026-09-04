@@ -66,37 +66,59 @@ def discover_streams(service, config):
 
     field_type_lookup = get_field_type_lookup()
     catalog = Catalog([])
+    skipped_count = 0
 
     for tap_stream_id, cfg in report_configs.items():
-        stream_name = cfg["stream_name"]
         report = cfg["report"]
 
-        fieldmap = get_fields(field_type_lookup, report)
-        schema_dict = get_schema(tap_stream_id, fieldmap)
-        schema = Schema.from_dict(schema_dict)
+        try:
+            fieldmap = get_fields(field_type_lookup, report)
+            schema_dict = get_schema(tap_stream_id, fieldmap)
+            schema = Schema.from_dict(schema_dict)
 
-        metadata = [{
-            'metadata': {
-                'tap-doubleclick-campaign-manager.report-id': report['id']
-            },
-            'breadcrumb': []
-        }]
-
-        for prop in schema_dict['properties'].keys():
-            metadata.append({
+            metadata = [{
                 'metadata': {
-                    'inclusion': 'automatic'
+                    'tap-doubleclick-campaign-manager.report-id': report['id']
                 },
-                'breadcrumb': ['properties', prop]
-            })
+                'breadcrumb': []
+            }]
 
-        catalog.streams.append(CatalogEntry(
-            stream=tap_stream_id,
-            stream_alias=tap_stream_id,
-            tap_stream_id=tap_stream_id,
-            key_properties=[],
-            schema=schema,
-            metadata=metadata
-        ))
+            for prop in schema_dict['properties'].keys():
+                metadata.append({
+                    'metadata': {
+                        'inclusion': 'automatic'
+                    },
+                    'breadcrumb': ['properties', prop]
+                })
+
+            catalog.streams.append(CatalogEntry(
+                stream=tap_stream_id,
+                stream_alias=tap_stream_id,
+                tap_stream_id=tap_stream_id,
+                key_properties=[],
+                schema=schema,
+                metadata=metadata
+            ))
+        except Exception as e:
+            skipped_count += 1
+            LOGGER.warning(
+                "Skipping report %r (type=%s, id=%s): %s",
+                report.get('name'),
+                report.get('type'),
+                report.get('id'),
+                e,
+            )
+
+    if skipped_count:
+        LOGGER.warning(
+            "Skipped %d report(s) that could not be converted to catalog streams",
+            skipped_count,
+        )
+
+    LOGGER.info(
+        "Built catalog with %d stream(s) from %d report(s)",
+        len(catalog.streams),
+        len(reports),
+    )
 
     return catalog.to_dict()

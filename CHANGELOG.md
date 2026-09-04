@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.5.3
+  * Skip reports during discover that cannot be converted to catalog streams instead of failing the entire discover run
+
 ## 1.5.2
   * Paginate through all CM360 reports during discover instead of returning only the first page (default page size of 10)
 
