@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.5.6
+  * Deactivate expired active report schedules before updating date ranges to avoid CM360 "Active schedules can't have a past expiration date" errors
+
 ## 1.5.5
   * Reuse existing QUEUED/PROCESSING report files for the same date range instead of submitting duplicate runs on job retry
 

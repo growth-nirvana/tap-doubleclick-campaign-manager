@@ -378,6 +378,37 @@ def get_date_chunks(start_date, end_date, chunk_size_days=FLOODLIGHT_MAX_DAYS):
         current_start = current_end + timedelta(days=1)
     return chunks
 
+
+def sanitize_report_schedule(report, report_id):
+    """
+    Deactivate expired active schedules before reports.update().
+
+    CM360 rejects updates when schedule.active is true and expirationDate is
+    in the past. The tap runs reports on demand, so disabling stale schedules
+    is safe and unblocks date-range updates.
+    """
+    schedule = report.get('schedule')
+    if not schedule or not schedule.get('active'):
+        return report
+
+    expiration_date_raw = schedule.get('expirationDate')
+    if not expiration_date_raw:
+        return report
+
+    expiration_date = parse_config_date(expiration_date_raw)
+    today = datetime.now().date()
+    if expiration_date >= today:
+        return report
+
+    LOGGER.warning(
+        'Report %s has an active schedule that expired on %s; deactivating schedule so the report can be updated',
+        report_id,
+        expiration_date,
+    )
+    schedule['active'] = False
+    return report
+
+
 def update_report_date_range(
     service, profile_id, report_id, start_date, end_date, custom_range=False
 ):
@@ -420,6 +451,7 @@ def update_report_date_range(
             }
         report["criteria"]["dateRange"] = date_range
 
+    report = sanitize_report_schedule(report, report_id)
     LOGGER.info(f"Updated date range for report {report_id}: {date_range}")
     return service.reports().update(profileId=profile_id, reportId=report_id, body=report).execute()
 

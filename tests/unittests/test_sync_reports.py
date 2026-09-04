@@ -10,6 +10,7 @@ from tap_doubleclick_campaign_manager.sync_reports import (
     date_ranges_match,
     find_in_flight_report_file,
     run_or_reuse_report_file,
+    sanitize_report_schedule,
 )
 
 import unittest
@@ -126,6 +127,43 @@ class TestSyncReports(unittest.TestCase):
 
         self.assertTrue(date_ranges_match(matching, expected))
         self.assertFalse(date_ranges_match(different, expected))
+
+    def test_sanitize_report_schedule_deactivates_expired_active_schedule(self):
+        report = {
+            'schedule': {
+                'active': True,
+                'expirationDate': '2024-12-31',
+                'repeats': 'MONTHLY',
+            }
+        }
+
+        actual = sanitize_report_schedule(report, '1753237628')
+
+        self.assertFalse(actual['schedule']['active'])
+
+    def test_sanitize_report_schedule_leaves_valid_active_schedule(self):
+        report = {
+            'schedule': {
+                'active': True,
+                'expirationDate': '2099-12-31',
+            }
+        }
+
+        actual = sanitize_report_schedule(report, '1753237628')
+
+        self.assertTrue(actual['schedule']['active'])
+
+    def test_sanitize_report_schedule_leaves_inactive_expired_schedule(self):
+        report = {
+            'schedule': {
+                'active': False,
+                'expirationDate': '2024-12-31',
+            }
+        }
+
+        actual = sanitize_report_schedule(report, '1753237628')
+
+        self.assertFalse(actual['schedule']['active'])
 
 
 class FakeFilesListRequest:
